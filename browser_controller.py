@@ -1,24 +1,28 @@
 import base64
 import time
 import logging
+from typing import Optional
+
 from playwright.async_api import async_playwright
 import asyncio
-import aiohttp
-from utils.action import Action
-from utils.data import Data
-from utils.error import BrowserOperationError, AgentError
+from action import Action, Coordinate
+from utils.error import BrowserOperationError
 from utils.get_absolute_path import get_absolute_path
 
 
 class BrowserController:
-    def __init__(self):
-        self.WAIT_TIME = 3  # 统一管理超时常量
+    def __init__(self, website_url: str):
+        # ToDo: 配置本地浏览器，利用已有的用户信息免去登录操作
+        # self.chrome_path = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        self.WAIT_TIME = 2  # 统一管理超时常量
         self.is_online = True
         self._state = {'finished': False, 'user_requested': False}
         self._browser = None
         self._page = None
         self._playwright = None
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.website_url = website_url
+        assert self.website_url, "News website cannot be None!"
 
     async def initialize(self) -> None:
         """初始化浏览器环境"""
@@ -34,15 +38,16 @@ class BrowserController:
         try:  # 启动浏览器，打开微博
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
+                # executable_path=self.chrome_path,
                 headless=False,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                 ]
             )
             self._page = await self._browser.new_page()
-            await self._page.set_viewport_size({"width": 1920, "height": 1080})
+            await self._page.set_viewport_size({"width": 1280, "height": 720})
             await self._page.goto(
-                'https://www.baidu.com/',
+                self.website_url,
                 wait_until='networkidle')
 
             self.logger.info("Browser initialized successfully")
@@ -79,6 +84,8 @@ class BrowserController:
         """
         # 利用 Action 类内置的验证逻辑
         action.validate()
+        if action.action_type in ['call_user', 'finished', 'start']:
+            return
 
         if not self._page:
             await self.initialize()
@@ -88,13 +95,13 @@ class BrowserController:
             self.logger.error(f"Action {action.action_type} failed: {str(e)}")
             raise BrowserOperationError(f"Action failed: {action.action_type}") from e
 
-    async def save_page_info(self):
+    async def save_page_info(self) -> dict:
         screenshot = await self._capture_screenshot()
         html = await self._capture_html()
         js = await self._capture_js()
         text = await self._capture_text()
         img_base64 = base64.b64encode(screenshot).decode("utf-8")
-        return {'html': html, 'js': js, 'text': text, 'img_base64': img_base64}
+        return {'html': html, 'js': js, 'text': text, 'img_base64': img_base64, 'screenshot': screenshot}
 
     async def _process_action(self, action: Action) -> None:
         """操作指令路由"""
@@ -118,7 +125,7 @@ class BrowserController:
         center = Action.calculate_center(action.start_box)
         await self._show_mouse_move(*center)
         await self._page.mouse.click(*center)
-        await self._show_click_complete(*center)
+        # await self._show_click_complete(*center, start_box=action.start_box)
         await self._wait()
 
     async def _handle_double_click(self, action: Action) -> None:
@@ -126,7 +133,7 @@ class BrowserController:
         center = Action.calculate_center(action.start_box)
         await self._show_mouse_move(*center)
         await self._page.mouse.click(*center, clickCount=2)
-        await self._show_click_complete(*center)
+        # await self._show_click_complete(*center, start_box=action.start_box)
         await self._wait()
 
     async def _handle_right_click(self, action: Action) -> None:
@@ -134,7 +141,7 @@ class BrowserController:
         center = Action.calculate_center(action.start_box)
         await self._show_mouse_move(*center)
         await self._page.mouse.click(*center, button='right')
-        await self._show_click_complete(*center)
+        # await self._show_click_complete(*center, start_box=action.start_box)
         await self._wait()
 
     async def _handle_drag(self, action: Action) -> None:
@@ -215,153 +222,163 @@ class BrowserController:
             self.logger.error(f"Text capture failed: {str(e)}")
             raise
 
-    async def _upload_data(self):
-        """ 已废弃 """
-
-        text = await self._capture_text()
-        html = await self._capture_html()
-        js = await self._capture_js()
-        screenshot = await self._capture_screenshot()
-        data = Data(text, html, js, screenshot)
-
-        async with aiohttp.ClientSession() as session:
-            # 构造 multipart 表单数据
-            form_data = aiohttp.FormData()
-
-            # 添加元数据文件
-            metadata = data.to_files()['metadata']
-            form_data.add_field(
-                name='metadata',
-                value=metadata[1],
-                filename=metadata[0],
-                content_type=metadata[2]
-            )
-
-            # 添加截图文件（如果存在）
-            if data.screenshot:
-                screenshot_info = data.to_files()['screenshot']
-                form_data.add_field(
-                    name='screenshot',
-                    value=screenshot_info[1],
-                    filename=screenshot_info[0],
-                    content_type=screenshot_info[2]
-                )
-
-            # 发送异步请求
-            async with session.post(
-                    self.server_host + '/upload',
-                    data=form_data
-            ) as response:
-                # 读取响应内容（根据实际情况调整）
-                response_text = await response.text()
-                return {
-                    "status": response.status,
-                    "content": response_text
-                }
-
     async def _show_mouse_move(self, x: int, y: int) -> None:
         """
-        在点击前显示鼠标移动动画，使用 /icon/mouse.svg 作为图标。
-        此处创建一个 <img> 元素，初始位置设置在页面左上角，
-        然后利用 CSS transition 平滑移动到目标位置。
+        美化鼠标移动动画，鼠标从视口边缘移入目标位置
+        :param x: 元素中心点横坐标
+        :param y: 元素中心点纵坐标
+        :return: None
         """
-        with open(get_absolute_path("/icon/mouse.svg"), "rb") as f:
-            svg_data = f.read()
-        svg_base64 = base64.b64encode(svg_data).decode("utf-8")
-        svg_url = f"data:image/svg+xml;base64,{svg_base64}"
         try:
-            await self._page.evaluate(f"""
-                // 创建鼠标移动动画图标（SVG 图片）
-                const moveImg = document.createElement('img');
-                moveImg.src = '{svg_url}';  // 使用SVG图标
-                moveImg.style.position = 'absolute';
-                moveImg.style.left = '0px';
-                moveImg.style.top = '0px';
-                moveImg.style.width = '20px';
-                moveImg.style.height = '20px';
-                moveImg.style.zIndex = 9999;
-                // 添加平滑移动动画
-                moveImg.style.transition = 'left 0.5s linear, top 0.5s linear';
-                document.body.appendChild(moveImg);
+            # 获取当前视口尺寸
+            viewport_size = await self._page.evaluate("({ width: window.innerWidth, height: window.innerHeight })")
+            screen_width = viewport_size['width']
+            screen_height = viewport_size['height']
 
-                // 利用 requestAnimationFrame 保证动画启动
-                requestAnimationFrame(() => {{
-                    // 调整位置使图标中心对齐目标坐标（20px 宽高的一半为10px）
-                    moveImg.style.left = '{x - 10}px';
-                    moveImg.style.top = '{y - 10}px';
-                }});
+            # 计算初始移动方向（基于目标点与视口中心的相对位置）
+            dx = -200 if x < screen_width / 2 else 200  # 横向偏移量
+            dy = -200 if y < screen_height / 2 else 200  # 纵向偏移量
+            rotate = 30 if dx > 0 else -30  # 根据方向设置旋转角度
 
-                // 动画结束后删除图标（稍长时间以确保动画完成）
-                setTimeout(() => moveImg.remove(), 900);
-            """)
-            await self._wait(1)
+            # 读取SVG文件
+            try:
+                with open(get_absolute_path("/icon/mouse.svg"), "rb") as f:
+                    svg_data = f.read()
+                svg_base64 = base64.b64encode(svg_data).decode("utf-8")
+                svg_url = f"data:image/svg+xml;base64,{svg_base64}"
+            except Exception as e:
+                self.logger.error(f"Failed to load mouse SVG: {str(e)}")
+                # 使用备用图像URL作为fallback
+                svg_url = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMCAzMCI+PHBhdGggZD0iTTEyIDI0LjQyMkwyLjUgMTQuOTIyVjMuNUgyNS41VjI1LjVIMTJWMjQuNDIyWiIgc3Ryb2tlPSJibGFjayIgc3Ryb2tlLXdpZHRoPSIyIiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg=="
+
+            # JavaScript代码中的字符串需要使用单引号，并使用f-string将Python变量正确注入
+            js_code = f"""
+                () => {{
+                    // 移除任何已存在的鼠标动画元素
+                    const existingMouse = document.getElementById('animated-mouse');
+                    if (existingMouse) existingMouse.remove();
+
+                    // 创建新的鼠标元素
+                    const moveImg = document.createElement('img');
+                    moveImg.id = 'animated-mouse';
+                    moveImg.src = '{svg_url}';
+
+                    // 设置元素基础样式
+                    moveImg.style.position = 'fixed'; // 使用fixed而不是absolute，以避免滚动问题
+                    moveImg.style.width = '30px';
+                    moveImg.style.height = '30px';
+                    moveImg.style.zIndex = '9999';
+                    moveImg.style.pointerEvents = 'none';
+
+                    // 设置初始位置（基于目标位置和偏移量计算）
+                    const startX = {x} + {dx};
+                    const startY = {y} + {dy};
+                    moveImg.style.left = startX - 15 + 'px';
+                    moveImg.style.top = startY - 15 + 'px';
+                    moveImg.style.transform = 'rotate({rotate}deg) scale(0.3)';
+
+                    document.body.appendChild(moveImg);
+
+                    // 确保DOM更新后再开始动画
+                    setTimeout(() => {{
+                        moveImg.style.transition = 'all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)';
+                        moveImg.style.left = '{x - 15}px';
+                        moveImg.style.top = '{y - 15}px';
+                        moveImg.style.transform = 'rotate(0deg) scale(1)';
+                    }}, 10);
+
+                    // 动画结束后移除元素
+                    setTimeout(() => {{
+                        moveImg.remove();
+                    }}, 1200);
+                }}
+            """
+
+            # 执行JavaScript代码
+            await self._page.evaluate(js_code)
+
+            # 等待动画完成（0.6秒动画时间 + 0.2秒缓冲）
+            await self._wait(0.8)
+
         except Exception as e:
             self.logger.error(f"Failed to show mouse move animation to ({x}, {y}): {str(e)}")
-
-    async def _show_click_complete(self, x: int, y: int) -> None:
-        """
-        在点击后显示点击完成动画，使用 /icon/mouse.svg 作为图标。
-        这里创建一个较大的图标，通过 CSS keyframes 实现淡出放大效果，
-        以视觉上提示点击事件的完成。
-        """
-        with open(get_absolute_path("/icon/mouse.svg"), "rb") as f:
-            svg_data = f.read()
-        svg_base64 = base64.b64encode(svg_data).decode("utf-8")
-        svg_url = f"data:image/svg+xml;base64,{svg_base64}"
-        try:
-            await self._page.evaluate(f"""
-                // 创建点击完成动画图标（SVG 图片）
-                const clickImg = document.createElement('img');
-                clickImg.src = '{svg_url}';
-                clickImg.style.position = 'absolute';
-                // 调整位置使图标中心对齐目标位置（120px 宽高的一半为60px）
-                clickImg.style.left = '{x - 60}px';
-                clickImg.style.top = '{y - 60}px';
-                clickImg.style.width = '120px';
-                clickImg.style.height = '120px';
-                clickImg.style.zIndex = 9999;
-                clickImg.style.pointerEvents = 'none';
-                // 应用淡出放大动画
-                clickImg.style.animation = 'fadeOut 1s forwards';
-
-                // 动态注入动画关键帧（避免重复注入时可优化判断）
-                const style = document.createElement('style');
-                style.textContent = `
-                    @keyframes fadeOut {{
-                        0% {{ opacity: 1; transform: scale(1); }}
-                        100% {{ opacity: 0; transform: scale(2); }}
-                    }}
-                `;
-                document.head.appendChild(style);
-                document.body.appendChild(clickImg);
-
-                // 动画结束后自动删除图标
-                setTimeout(() => clickImg.remove(), 2000);
-            """)
-        except Exception as e:
-            self.logger.error(f"Failed to show click complete animation at ({x}, {y}): {str(e)}")
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
 
     async def main():
-        agent = BrowserController()
-        action1 = Action("type", content="Hello, World!")
-        action2 = Action("click", start_box=(0, 0, 1920, 1080))
+        agent = BrowserController('https://www.baidu.com/')
+        await agent.initialize()
 
-        try:
-            await agent.initialize()
-            # 捕获页面
-            x = await agent.save_page_info()
-            await agent.execute(action1)
-            await agent.execute(action2)
+        screenshot_count = 1  # 初始化截图计数器
 
-        except AgentError as e:
-            logging.error(f"Operation failed: {str(e)}")
-        finally:
-            await agent.shutdown()
+        while True:
+            action_type = input(
+                "请输入操作类型（click, left_double, right_single, drag, hotkey, type, scroll, screenshot, exit）：")
+            if action_type == 'exit':
+                break
+            if action_type == 'screenshot':
+                screenshot_path = f"screenshot_{screenshot_count}.png"  # 自动生成截图文件名
+                try:
+                    screenshot = await agent._capture_screenshot()
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot)
+                    print(f"截图已保存到 {screenshot_path}")
+                    screenshot_count += 1  # 计数器加一
+                except Exception as e:
+                    print(f"截图失败：{e}")
+                continue
+
+            # 使用 Action 类创建操作对象
+            if action_type in ['click', 'left_double', 'right_single', 'scroll']:
+                start_box_str = input("请输入 start_box (例如：100,200,300,400)：")
+                start_box = tuple(map(int, start_box_str.split(',')))
+                if action_type == 'scroll':
+                    deltas_str = input("请输入 deltas (例如：0,100)：")
+                    deltas = tuple(map(int, deltas_str.split(',')))
+                    action = Action(action_type, params={'start_box': start_box, 'deltas': deltas})
+                else:
+                    action = Action(action_type, params={'start_box': start_box})
+            elif action_type == 'drag':
+                start_box_str = input("请输入 start_box (例如：100,200,300,400)：")
+                start_box = tuple(map(int, start_box_str.split(',')))
+                end_box_str = input("请输入 end_box (例如：500,600,700,800)：")
+                end_box = tuple(map(int, end_box_str.split(',')))
+                action = Action(action_type, params={'start_box': start_box, 'end_box': end_box})
+            elif action_type == 'hotkey':
+                key = input("请输入按键名称 (例如：Enter, Escape, a)：")
+                action = Action(action_type, params={'key': key})
+            elif action_type == 'type':
+                content = input("请输入要输入的内容：")
+                submit_str = input("是否提交？(yes/no)：")
+                submit = submit_str.lower() == 'yes'
+                if submit:
+                    content += '\n'
+                action = Action(action_type, params={'content': content})
+            else:
+                print("无效的操作类型！")
+                continue
+
+            try:
+                await agent.execute(action)
+                print("操作执行成功！")
+                # 每次操作后立即保存截图，自动编号
+                screenshot_path = f"screenshot_{screenshot_count}.png"
+                try:
+                    screenshot = await agent._capture_screenshot()
+                    with open(screenshot_path, "wb") as f:
+                        f.write(screenshot)
+                    print(f"截图已保存到 {screenshot_path}")
+                    screenshot_count += 1
+                except Exception as e:
+                    print(f"截图失败：{e}")
+            except BrowserOperationError as e:
+                print(f"操作执行失败：{e}")
+            except Exception as e:
+                print(f"发生未知错误：{e}")
+
+        await agent.shutdown()
 
 
     asyncio.run(main())
