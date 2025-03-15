@@ -33,7 +33,7 @@ logging.basicConfig(
 
 
 class Agent:
-    def __init__(self, website_url: str):
+    def __init__(self, website_url: str = None):
         """
         初始化 Agent 实例。
 
@@ -53,6 +53,7 @@ class Agent:
         Args:
             user_instruction (str): 用户指令。
         """
+        assert self.website_url,"未指定任务网站，请设置！"
         history = []
         action = Action("start")
         step = 0
@@ -121,13 +122,19 @@ class Agent:
         self.screenshot_cache = []  # 清空缓存列表
         self.logger.info("所有缓存截图保存完毕，缓存已清空。")
 
+    def set_websit(self,website_url):
+        self.website_url = website_url
+        self.hands.set_website_url(self.website_url)
+
+
 
 async def main():
     """
     主函数，用于创建 Agent 并执行任务。
     """
     website_key = 'google'  # 可以修改为 '微博' 或 '小红书'
-    agent = Agent(WEBSITE_DICT[website_key])
+    agent = Agent()
+    agent.set_websit("https://www.google.com.hk/")
     await agent.work("在输入框输入‘今日黄金价格’,回车搜索，查看最相关页面，收集网页结果返回")
     # 可以创建多个 Agent 并发执行任务 (示例代码已注释)
     # agents = [Agent(WEBSITE_DICT['百度']) for _ in range(2)] # 创建多个 Agent 实例
