@@ -400,7 +400,7 @@ class NewsFilterMenuBar(rumps.App):
         """实际的异步任务执行"""
         try:
             # 注意: 这里修复了字符串引用的问题，使用实际值而不是字符串字面量
-            await self.agent.work(self.current_command)
+            await self.agent.work(self.current_command,self.alert)
 
             # 任务完成后在主线程上安排通知
             rumps.Timer(0, lambda _: self.show_notification(
@@ -411,6 +411,23 @@ class NewsFilterMenuBar(rumps.App):
         except Exception as e:
             print(f"执行任务时出错: {e}")
             raise  # 重新抛出异常，让_run_async_task捕获
+
+    def alert(self, message):
+        """ 显示警报通知 """
+        print(f"\n[警报] {message}")
+
+        try:
+            # 使用 rumps 进行通知
+            rumps.notification("NewsFilter 警报", "重要通知", message)
+        except Exception as e:
+            print(f"rumps.notification 失败: {e}")
+
+        try:
+            # 使用 AppleScript 提供系统级通知
+            script = f'display notification "{message}" with title "NewsFilter 警报"'
+            subprocess.run(['osascript', '-e', script], capture_output=True)
+        except Exception as e:
+            print(f"AppleScript通知失败: {e}")
 
     def open_logs(self, _):
         """打开日志"""

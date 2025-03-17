@@ -31,7 +31,7 @@ class Action:
         'hotkey': ['key'],
         'wait': [],  # wait 操作不需要额外字段
         'finished': [],  # finished 操作不需要额外字段
-        'call_user': []  # call_user 操作不需要额外字段
+        'call_user': ['message']
     }
 
     def __init__(self, action_type, params=None):
@@ -45,6 +45,7 @@ class Action:
         self.end_box = params.get('end_box', None)
         self.deltas = params.get('deltas', None)
         self.key = params.get('key', None)
+        self.message = None
 
         # 验证字段
         if not self.action_type:

@@ -60,7 +60,8 @@ class VisionLLM:
         visible_elements = kwargs.get('visible_elements', None)
 
         # 可选参数，带默认值
-        model = kwargs.get('model', "qwen2.5-vl-72b-instruct")
+        # 目前实验下来 qwen-vl-max-latest（便宜）和qwen2.5-vl-72b-instruct 效果还不错
+        model = kwargs.get('model', "qwen2-vl-72b-instruct")
         temperature = kwargs.get('temperature', 1.3)
 
         messages = [

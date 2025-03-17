@@ -46,14 +46,11 @@ class Agent:
         self.screenshot_cache = []  # 初始化截图缓存列表
         self.logger = logging.getLogger(f'Agent[{website_url}]')  # 使用更具描述性的 logger 名称
 
-    async def work(self, user_instruction):
+    async def work(self, user_instruction, call_user=None):
         """
         执行 Agent 的主要工作流程。
-
-        Args:
-            user_instruction (str): 用户指令。
         """
-        assert self.website_url,"未指定任务网站，请设置！"
+        assert self.website_url, "未指定任务网站，请设置！"
         history = []
         action = Action("start")
         step = 0
@@ -73,7 +70,7 @@ class Agent:
 
         await self.hands.initialize()
         try:  # 使用 try...finally 确保即使发生异常也关闭浏览器
-            while action.action_type not in ['finished', 'call_user']:
+            while action.action_type not in ['finished']:
                 step += 1
                 self.logger.info(f"--- 开始步骤{step} ---")
                 info = await self.hands.save_page_info()
@@ -87,6 +84,9 @@ class Agent:
                                                    user_instruction=user_instruction, history=history)
                 self.logger.info(f"VisionLLM 思考结果 - Thought: '{thought}', Action: '{action}'")
                 history.append(f'thought:{thought},action:{action}')
+                if action.action_type == 'call_user':
+                    call_user(action.message)
+
                 await self.hands.execute(action)
                 self.logger.info(f"--- 步骤结束 ---\n\n\n")
 
@@ -122,10 +122,9 @@ class Agent:
         self.screenshot_cache = []  # 清空缓存列表
         self.logger.info("所有缓存截图保存完毕，缓存已清空。")
 
-    def set_websit(self,website_url):
+    def set_websit(self, website_url):
         self.website_url = website_url
         self.hands.set_website_url(self.website_url)
-
 
 
 async def main():

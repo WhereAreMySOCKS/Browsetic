@@ -4,6 +4,7 @@ import logging
 import subprocess
 import platform
 import os
+from pyexpat.errors import messages
 from typing import Optional, Dict, Any
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
@@ -34,6 +35,7 @@ class BrowserController:
         self.chrome_process = None
         self.logger = logging.getLogger(self.__class__.__name__)
         self.website_url = website_url
+
     def set_website_url(self, website_url: str):
         self.website_url = website_url
         assert self.website_url, "News website cannot be None!"
@@ -88,7 +90,7 @@ class BrowserController:
                 self._page = await self._context.new_page()
 
             # Common setup
-            await self._page.set_viewport_size({"width": 1280, "height": 800})
+            await self._page.set_viewport_size({"width": 1280, "height": 720})
 
             # Set default navigation timeout to avoid getting stuck
             self._page.set_default_navigation_timeout(30000)
