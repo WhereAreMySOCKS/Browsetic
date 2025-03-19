@@ -44,6 +44,7 @@ class Agent:
         self.hands = BrowserController()  # BrowserController 实例
         self.screenshot_cache = []  # 初始化截图缓存列表
         self.logger = logging.getLogger(f'Agent')  # 使用更具描述性的 logger 名称
+        self._is_stop_work = False
 
     async def work(self, user_instruction):
         """
@@ -72,7 +73,7 @@ class Agent:
 
         await self.hands.initialize()
         try:  # 使用 try...finally 确保即使发生异常也关闭浏览器
-            while action.action_type not in ['finished', 'call_user']:
+            while action.action_type not in ['finished', 'call_user'] and self._is_stop_work:
                 step += 1
                 self.logger.info(f"--- 开始步骤{step} ---")
                 info = await self.hands.save_page_info()
@@ -121,23 +122,9 @@ class Agent:
         self.screenshot_cache = []  # 清空缓存列表
         self.logger.info("所有缓存截图保存完毕，缓存已清空。")
 
-    def set_websit(self, website_url):
+    def set_website(self, website_url):
         self.hands.set_website_url(website_url)
 
+    def stop_task(self):
+        self._is_stop_work = True
 
-async def main():
-    """
-    主函数，用于创建 Agent 并执行任务。
-    """
-    website_key = 'google'  # 可以修改为 '微博' 或 '小红书'
-    agent = Agent()
-    agent.set_websit("https://www.google.com.hk/")
-    await agent.work("在输入框输入'今日黄金价格',回车搜索，查看最相关页面，收集网页结果返回")
-    # 可以创建多个 Agent 并发执行任务 (示例代码已注释)
-    # agents = [Agent(WEBSITE_DICT['百度']) for _ in range(2)] # 创建多个 Agent 实例
-    # tasks = [asyncio.create_task(agent.work("查询今日黄金价格")) for agent in agents] # 创建任务列表
-    # await asyncio.gather(*tasks) # 并发执行任务
-
-
-if __name__ == '__main__':
-    asyncio.run(main())

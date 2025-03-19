@@ -15,14 +15,24 @@ from utils.dialog_window import *
 CONFIG_FILE = os.path.expanduser("~/newsfilter_config.json")
 
 
+# ToDo 增加配置大模型功能
 class NewsFilterMenuBar(rumps.App):
     def __init__(self):
+        idle_icon_path = 'icon/idle_icon.png'
+        working_icon_path = 'icon/working_icon.png'
         super(NewsFilterMenuBar, self).__init__(
             name="NewsFilter",
-            title="🌧️",
-            icon=None,
+            title="",
+            icon=idle_icon_path,  # 默认图标 - 空闲状态
             quit_button="退出"
         )
+        # 初始化图标路径
+        # 存储图标对象而不只是路径
+        self.icons = {
+            'idle': idle_icon_path,
+            'working': working_icon_path
+        }
+
         # 初始化PyQt应用
         self.qt_app = QApplication.instance()
         if not self.qt_app:
@@ -182,10 +192,45 @@ class NewsFilterMenuBar(rumps.App):
                 # 如果格式不符合预期，保留原样
                 self.current_website_name = self.current_website
 
-            self.title = f"🌧️ {self.current_website_name}"
+            self.title = f"{self.current_website_name}"
         else:
-            self.title = "🌧️"
+            self.title = "️"
         print(f"菜单标题更新为: {self.title}")
+
+    def set_icon_state(self, is_working=False):
+        """更新应用图标状态"""
+        icon_key = 'working' if is_working else 'idle'
+
+        # 如果当前图标已经是目标状态，则不进行操作
+        if hasattr(self, "_current_icon_state") and self._current_icon_state == icon_key:
+            return
+
+        print(f"set_icon_state 被调用, 目标图标: {icon_key}")
+        self._current_icon_state = icon_key  # 记录当前图标状态
+
+        # 取消之前的定时器（如果存在）
+        if hasattr(self, "_icon_timer") and self._icon_timer is not None:
+            self._icon_timer.stop()
+            self._icon_timer = None
+
+        def delayed_set(_):
+            self.icon = self.icons[icon_key]
+
+            # 只在调试模式下打印或使用日志记录而非直接打印
+            if hasattr(self, "debug_mode") and self.debug_mode:
+                print(f"已切换到{icon_key}图标")
+
+            # 轻微改变菜单以触发刷新 - 使用更简洁的方式
+            original_title = self.title
+            self.title = original_title + " "
+            self.title = original_title
+
+            # 完成后清除定时器引用
+            self._icon_timer = None
+
+        self._icon_timer = rumps.Timer(delayed_set, 0.2)
+        self._icon_timer.start()
+
 
     def show_notification(self, title, subtitle, message):
         """显示通知并在控制台打印"""
@@ -396,7 +441,10 @@ class NewsFilterMenuBar(rumps.App):
         print(f"开始执行任务: 网站={self.current_website}, 指令={self.current_command_name}")
         self.show_notification("NewsFilter", "任务开始",
                                f"网站: {self.current_website_name}\n指令: {self.current_command_name}")
+
+        # 设置任务状态并更新图标
         self.task_running = True
+        self.set_icon_state(is_working=True)  # 切换到工作图标
 
         # 启动一个线程来运行异步任务
         threading.Thread(target=self._run_async_task, args=(command_content,), daemon=True).start()
@@ -405,7 +453,7 @@ class NewsFilterMenuBar(rumps.App):
         """在单独的线程中运行异步任务"""
         try:
             # 设置网站
-            self.agent.set_websit(self.current_website)
+            self.agent.set_website(self.current_website)
 
             # 为这个线程创建一个新的事件循环
             loop = asyncio.new_event_loop()
@@ -420,12 +468,20 @@ class NewsFilterMenuBar(rumps.App):
             # 在主线程上安排通知
             def show_error_notification(_):
                 self.show_notification("NewsFilter", "任务失败", str(e))
+                # 任务失败时切换回空闲图标
+                self.set_icon_state(is_working=False)
 
             timer = rumps.Timer(show_error_notification, 0.1)
             timer.start()
         finally:
-            # 标记任务完成
+            # 标记任务完成，并在主线程上切换回空闲图标
             self.task_running = False
+
+            def restore_idle_state(_):
+                self.set_icon_state(is_working=False)
+
+            timer = rumps.Timer(restore_idle_state, 0.1)
+            timer.start()
 
     async def _execute_task(self, command_content):
         """实际的异步任务执行"""
@@ -440,6 +496,8 @@ class NewsFilterMenuBar(rumps.App):
                     "任务完成",
                     f"网站: {self.current_website_name}\n指令: {self.current_command_name}"
                 )
+                # 切换回空闲图标
+                self.set_icon_state(is_working=False)
 
             timer = rumps.Timer(show_completion_notification, 0.1)
             timer.start()
