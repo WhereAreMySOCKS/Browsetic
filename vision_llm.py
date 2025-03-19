@@ -1,16 +1,14 @@
 import json
 import os
-
 from openai import OpenAI
-
 from prompt.agent_prompt import get_prompt
 from action import Action
 
 
 class VisionLLM:
-    def __init__(self, model_name='qwen-vl-max-2025-01-25'):
+    def __init__(self, model_name='qwen2.5-vl-72b-instruct', api_key=None):
         self.client = OpenAI(
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
+            api_key=api_key or os.getenv("DASHSCOPE_API_KEY"),
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
         self.model = model_name
@@ -60,8 +58,7 @@ class VisionLLM:
         visible_elements = kwargs.get('visible_elements', None)
 
         # 可选参数，带默认值
-        # 目前实验下来 qwen-vl-max-latest（便宜）和qwen2.5-vl-72b-instruct 效果还不错
-        model = kwargs.get('model', "qwen2-vl-72b-instruct")
+        model = kwargs.get('model', self.model)
         temperature = kwargs.get('temperature', 1.3)
 
         messages = [

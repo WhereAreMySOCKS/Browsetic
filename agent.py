@@ -33,30 +33,32 @@ logging.basicConfig(
 
 
 class Agent:
-    def __init__(self, website_url: str = None):
+    def __init__(self, api_key=None):
         """
         初始化 Agent 实例。
 
         Args:
-            website_url (str): 目标网站的 URL。
+            api_key (str): 用于 VisionLLM 的 API Key。
         """
-        self.website_url = website_url
-        self.brain = VisionLLM()  # VisionLLM 实例
-        self.hands = BrowserController(self.website_url)  # BrowserController 实例
+        self.brain = VisionLLM(api_key=api_key)  # 传递API Key到VisionLLM
+        self.hands = BrowserController()  # BrowserController 实例
         self.screenshot_cache = []  # 初始化截图缓存列表
-        self.logger = logging.getLogger(f'Agent[{website_url}]')  # 使用更具描述性的 logger 名称
+        self.logger = logging.getLogger(f'Agent')  # 使用更具描述性的 logger 名称
 
-    async def work(self, user_instruction, call_user=None):
+    async def work(self, user_instruction):
         """
         执行 Agent 的主要工作流程。
+
+        Args:
+            user_instruction (str): 用户指令。
         """
-        assert self.website_url, "未指定任务网站，请设置！"
+        assert self.hands.website_url, "未指定任务网站，请设置！"
         history = []
         action = Action("start")
         step = 0
         # 创建任务专属日志文件夹，包含时间戳和网站名称
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.task_log_dir = os.path.join(LOG_BASE_DIR, f'task_{timestamp}_{os.path.basename(self.website_url)}')
+        self.task_log_dir = os.path.join(LOG_BASE_DIR, f'task_{timestamp}_{os.path.basename(self.hands.website_url)}')
         os.makedirs(self.task_log_dir, exist_ok=True)
         log_file = os.path.join(self.task_log_dir, f'agent_{timestamp}.log')
 
@@ -66,11 +68,11 @@ class Agent:
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)  # Agent Logger 添加文件Handler
 
-        self.logger.info(f"任务开始：'{user_instruction}'，目标网站：'{self.website_url}'")
+        self.logger.info(f"任务开始：'{user_instruction}'，目标网站：'{self.hands.website_url}'")
 
         await self.hands.initialize()
         try:  # 使用 try...finally 确保即使发生异常也关闭浏览器
-            while action.action_type not in ['finished']:
+            while action.action_type not in ['finished', 'call_user']:
                 step += 1
                 self.logger.info(f"--- 开始步骤{step} ---")
                 info = await self.hands.save_page_info()
@@ -84,9 +86,6 @@ class Agent:
                                                    user_instruction=user_instruction, history=history)
                 self.logger.info(f"VisionLLM 思考结果 - Thought: '{thought}', Action: '{action}'")
                 history.append(f'thought:{thought},action:{action}')
-                if action.action_type == 'call_user':
-                    call_user(action.message)
-
                 await self.hands.execute(action)
                 self.logger.info(f"--- 步骤结束 ---\n\n\n")
 
@@ -123,8 +122,7 @@ class Agent:
         self.logger.info("所有缓存截图保存完毕，缓存已清空。")
 
     def set_websit(self, website_url):
-        self.website_url = website_url
-        self.hands.set_website_url(self.website_url)
+        self.hands.set_website_url(website_url)
 
 
 async def main():
@@ -134,7 +132,7 @@ async def main():
     website_key = 'google'  # 可以修改为 '微博' 或 '小红书'
     agent = Agent()
     agent.set_websit("https://www.google.com.hk/")
-    await agent.work("在输入框输入‘今日黄金价格’,回车搜索，查看最相关页面，收集网页结果返回")
+    await agent.work("在输入框输入'今日黄金价格',回车搜索，查看最相关页面，收集网页结果返回")
     # 可以创建多个 Agent 并发执行任务 (示例代码已注释)
     # agents = [Agent(WEBSITE_DICT['百度']) for _ in range(2)] # 创建多个 Agent 实例
     # tasks = [asyncio.create_task(agent.work("查询今日黄金价格")) for agent in agents] # 创建任务列表

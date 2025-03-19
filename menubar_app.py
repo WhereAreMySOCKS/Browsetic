@@ -4,8 +4,12 @@ import json
 import subprocess
 import threading
 import asyncio
+import sys
+
+from PyQt6.QtWidgets import QApplication
 
 from agent import Agent
+from utils.dialog_window import *
 
 # 配置文件路径
 CONFIG_FILE = os.path.expanduser("~/newsfilter_config.json")
@@ -19,15 +23,21 @@ class NewsFilterMenuBar(rumps.App):
             icon=None,
             quit_button="退出"
         )
-        # ToDo： 增加动画，提示用户程序正在执行
+        # 初始化PyQt应用
+        self.qt_app = QApplication.instance()
+        if not self.qt_app:
+            self.qt_app = QApplication(sys.argv)
 
         # 状态变量
         self.websites = []
-        self.commands = []
-        self.saved_configs = []  # 保存的配置组合 [(网站, 指令), ...]
+        self.commands = {}  # 改为字典：{名称: 内容}
+        self.saved_configs = []  # 保存的配置组合 [(网站, 指令名称), ...]
         self.current_website = ""
-        self.current_command = ""
+        self.current_website_name = ""
+        self.current_command_name = ""  # 当前选择的指令名称
         self.task_running = False
+        self.api_key = ""  # 存储API Key
+        self.agent = None  # 初始化时不创建Agent实例
 
         # 加载已保存的配置
         self.load_config()
@@ -35,7 +45,11 @@ class NewsFilterMenuBar(rumps.App):
         # 设置初始菜单
         self.setup_menu()
 
-        self.agent = Agent()
+        # 检查并设置API Key
+        if not self.api_key:
+            self.configure_api_key(None)
+
+        self.agent = Agent(api_key=self.api_key)  # 传入API Key
 
     def setup_menu(self):
         """设置菜单结构"""
@@ -52,18 +66,18 @@ class NewsFilterMenuBar(rumps.App):
         # 1. 我的配置（已保存的网站+指令组合）
         if self.saved_configs:
             my_configs_menu = rumps.MenuItem("我的配置")
-            for site, cmd in self.saved_configs:
-                # 格式为 "网站: 指令"
-                config_name = f"{site}: {cmd}"
+            for site, cmd_name in self.saved_configs:
+                # 格式为 "网站: 指令名称"
+                config_name = f"{site}: {cmd_name}"
                 item = rumps.MenuItem(config_name, callback=self.select_saved_config)
-                if site == self.current_website and cmd == self.current_command:
+                if site == self.current_website and cmd_name == self.current_command_name:
                     item.state = 1
                 my_configs_menu.add(item)
             self.menu.add(my_configs_menu)
             print("已添加 '我的配置' 菜单")
 
         # 2. 网站菜单
-        website_menu = rumps.MenuItem("网站")
+        website_menu = rumps.MenuItem("我的网站")
         if self.websites:
             for site in self.websites:
                 item = rumps.MenuItem(site, callback=self.select_website)
@@ -71,20 +85,20 @@ class NewsFilterMenuBar(rumps.App):
                     item.state = 1
                 website_menu.add(item)
             website_menu.add(rumps.separator)  # 添加分隔线
-        website_menu.add(rumps.MenuItem("添加网站", callback=self.add_website))
+        website_menu.add(rumps.MenuItem("添加", callback=self.add_website))
         self.menu.add(website_menu)
         print("已添加 '网站' 菜单")
 
         # 3. 指令菜单
-        command_menu = rumps.MenuItem("指令")
+        command_menu = rumps.MenuItem("我的指令")
         if self.commands:
-            for cmd in self.commands:
-                item = rumps.MenuItem(cmd, callback=self.select_command)
-                if cmd == self.current_command:
+            for cmd_name in self.commands.keys():
+                item = rumps.MenuItem(cmd_name, callback=self.select_command)
+                if cmd_name == self.current_command_name:
                     item.state = 1
                 command_menu.add(item)
             command_menu.add(rumps.separator)  # 添加分隔线
-        command_menu.add(rumps.MenuItem("添加指令", callback=self.add_command))
+        command_menu.add(rumps.MenuItem("添加", callback=self.add_command))
         self.menu.add(command_menu)
         print("已添加 '指令' 菜单")
 
@@ -94,25 +108,50 @@ class NewsFilterMenuBar(rumps.App):
         self.menu.add(rumps.MenuItem("保存当前配置", callback=self.save_current_config))
         print("已添加任务操作菜单项")
 
-        # 5. 高级设置
+        # 5. 新增的删除菜单
         self.menu.add(rumps.separator)
-        advanced_menu = rumps.MenuItem("高级设置")
+        delete_menu = rumps.MenuItem("删除")
+
+        # 删除指令子菜单
+        if self.commands:
+            delete_commands_menu = rumps.MenuItem("删除指令")
+            for cmd_name in self.commands.keys():
+                item = rumps.MenuItem(cmd_name, callback=self.delete_command)
+                delete_commands_menu.add(item)
+            delete_menu.add(delete_commands_menu)
+
+        # 删除网站子菜单
+        if self.websites:
+            delete_websites_menu = rumps.MenuItem("删除网站")
+            for site in self.websites:
+                item = rumps.MenuItem(site, callback=self.delete_website)
+                delete_websites_menu.add(item)
+            delete_menu.add(delete_websites_menu)
+
+        # 一键清空选项
+        delete_menu.add(rumps.MenuItem("一键清空", callback=self.clear_config))
+
+        self.menu.add(delete_menu)
+        print("已添加 '删除' 菜单")
+
+        # 6. 高级设置
+        self.menu.add(rumps.separator)
+        advanced_menu = rumps.MenuItem("设置")
+        advanced_menu.add(rumps.MenuItem("配置API Key", callback=self.configure_api_key))
         advanced_menu.add(rumps.MenuItem("编辑配置文件", callback=self.edit_config_file))
-        advanced_menu.add(rumps.MenuItem("清除所有配置", callback=self.clear_config))
         advanced_menu.add(rumps.MenuItem("查看日志", callback=self.open_logs))
-        advanced_menu.add(rumps.MenuItem("显示通知测试", callback=self.test_notification))
         self.menu.add(advanced_menu)
         print("已添加 '高级设置' 菜单")
 
-        # 6. 显示当前状态
-        if self.current_website or self.current_command:
+        # 7. 显示当前状态
+        if self.current_website_name or self.current_command_name:
             status = "当前: "
             if self.current_website:
-                status += self.current_website
-            if self.current_website and self.current_command:
+                status += self.current_website_name
+            if self.current_website and self.current_command_name:
                 status += " | "
-            if self.current_command:
-                status += self.current_command
+            if self.current_command_name:
+                status += self.current_command_name
             self.menu.add(rumps.separator)
             self.menu.add(rumps.MenuItem(status, callback=None))
             print(f"已添加状态显示: {status}")
@@ -128,42 +167,25 @@ class NewsFilterMenuBar(rumps.App):
     def update_title(self):
         """更新菜单栏标题显示当前选择"""
         if self.current_website:
-            # ToDO 优化名称，可以让用户起一个
-            short_name = ''.join([c for c in self.current_website if c.isupper() or c.isdigit()])
-            if not short_name:
-                short_name = self.current_website[:2]
-            self.title = f"🌧️ {short_name}"
+            # 提取域名中间部分，去除www和com等
+            domain_parts = self.current_website.split('.')
+
+            # 如果长度至少为3，可能包含www前缀
+            if len(domain_parts) >= 3 and domain_parts[0].lower() in ['www', 'https://www']:
+                # 去除www和最后一个部分(com/org等)，只保留中间部分
+                self.current_website_name = domain_parts[1]
+            # 如果只有两部分(如example.com)
+            elif len(domain_parts) >= 2:
+                # 只保留第一个部分
+                self.current_website_name = domain_parts[0]
+            else:
+                # 如果格式不符合预期，保留原样
+                self.current_website_name = self.current_website
+
+            self.title = f"🌧️ {self.current_website_name}"
         else:
             self.title = "🌧️"
         print(f"菜单标题更新为: {self.title}")
-
-    def test_notification(self, _):
-        """测试不同通知方法"""
-        print("\n===== 通知测试开始 =====")
-
-        try:
-            rumps.notification("测试通知 1", "使用 rumps.notification", "如果您看到此消息，rumps通知正常工作")
-            print("rumps.notification 已调用")
-        except Exception as e:
-            print(f"rumps.notification 失败: {e}")
-
-        try:
-            cmd = ['osascript', '-e',
-                   'display notification "如果您看到此消息，简单AppleScript通知正常工作" with title "测试通知 2"']
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            print(f"osascript 简单版返回状态: {result.returncode}")
-            if result.stderr:
-                print(f"错误输出: {result.stderr}")
-        except Exception as e:
-            print(f"osascript 简单版失败: {e}")
-
-        print("\n方法3: 使用终端通知")
-        print("*********************************")
-        print("* 测试通知 3: 终端通知          *")
-        print("* 如果你看到这个，终端输出正常  *")
-        print("*********************************")
-
-        print("===== 通知测试结束 =====\n")
 
     def show_notification(self, title, subtitle, message):
         """显示通知并在控制台打印"""
@@ -173,54 +195,24 @@ class NewsFilterMenuBar(rumps.App):
         except Exception as e:
             print(f"rumps通知失败: {e}")
 
-        try:
-            script = f'display notification "{message}" with title "{title}"'
-            if subtitle:
-                script += f' subtitle "{subtitle}"'
-            subprocess.run(['osascript', '-e', script], capture_output=True)
-        except Exception as e:
-            print(f"AppleScript通知失败: {e}")
-
-    def applescript_input_dialog(self, title, message, default_text=""):
-        """使用AppleScript显示输入对话框"""
-        # ToDO 太丑了
+    def qt_input_dialog(self, title, message, default_text="", multiline=False):
+        """使用PyQt显示输入对话框"""
         print(f"\n对话框: [{title}] {message}")
         try:
-            script = f'''
-            tell application "System Events"
-                display dialog "{message}" default answer "{default_text}" with title "{title}"
-                set dialogResult to result
-                set buttonPressed to button returned of dialogResult
-                set textReturned to text returned of dialogResult
-                return textReturned
-            end tell
-            '''
-            result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
-            if result.returncode == 0:
-                response = result.stdout.strip()
-                print(f"用户输入: {response}")
-                return response
-            else:
-                print(f"对话框取消或失败: {result.stderr}")
+            # 确保在主线程中执行
+            dialog = InputDialog(title, message, default_text, multiline)
+            result = dialog.get_text()
+            print(f"用户输入: {result}")
+            return result
         except Exception as e:
             print(f"对话框显示失败: {e}")
         return None
 
-    def applescript_confirm_dialog(self, title, message):
-        """使用AppleScript显示确认对话框"""
-        # ToDO 太丑了
+    def qt_confirm_dialog(self, title, message):
+        """使用PyQt显示确认对话框"""
         print(f"\n确认对话框: [{title}] {message}")
         try:
-            script = f'''
-            tell application "System Events"
-                display dialog "{message}" buttons {{"取消", "确定"}} default button "确定" with title "{title}"
-                set dialogResult to result
-                set buttonPressed to button returned of dialogResult
-                return buttonPressed
-            end tell
-            '''
-            result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
-            confirmed = result.returncode == 0 and "确定" in result.stdout
+            confirmed = confirm_dialog(title, message)
             print(f"用户选择: {'确定' if confirmed else '取消'}")
             return confirmed
         except Exception as e:
@@ -232,14 +224,16 @@ class NewsFilterMenuBar(rumps.App):
         try:
             title = sender.title
             print(f"\n选择配置: {title}")
-            site, cmd = title.split(": ", 1)
+            site, cmd_name = title.split(": ", 1)
             self.current_website = site
-            self.current_command = cmd
+            self.current_command_name = cmd_name
+            # 更新网站名称
+            self.update_title()
             print(f"已设置当前网站: {site}")
-            print(f"已设置当前指令: {cmd}")
+            print(f"已设置当前指令: {cmd_name}")
             self.setup_menu()
             self.show_notification("NewsFilter", "配置已选择",
-                                   f"当前网站: {site}\n当前指令: {cmd}")
+                                   f"当前网站: {self.current_website_name}\n当前指令: {cmd_name}")
         except ValueError as e:
             print(f"选择配置失败: {e}")
             self.show_notification("NewsFilter", "错误", "配置格式不正确")
@@ -247,12 +241,12 @@ class NewsFilterMenuBar(rumps.App):
     def save_current_config(self, _):
         """保存当前的网站和指令组合"""
         print("\n保存当前配置")
-        if not self.current_website or not self.current_command:
+        if not self.current_website or not self.current_command_name:
             print("错误: 未选择网站或指令")
             self.show_notification("NewsFilter", "错误", "请先选择网站和指令")
             return
 
-        config_pair = (self.current_website, self.current_command)
+        config_pair = (self.current_website, self.current_command_name)
         if config_pair in self.saved_configs:
             print(f"配置已存在: {config_pair}")
             self.show_notification("NewsFilter", "提示", "此配置组合已保存")
@@ -262,50 +256,62 @@ class NewsFilterMenuBar(rumps.App):
         print(f"已添加配置: {config_pair}")
         self.save_config()
         self.setup_menu()
+        # 使用更简洁的网站名称显示
         self.show_notification("NewsFilter", "配置已保存",
-                               f"已保存配置: {self.current_website} - {self.current_command}")
+                               f"已保存配置: {self.current_website_name} - {self.current_command_name}")
 
     def add_website(self, _):
         """添加新网站"""
         print("\n添加新网站")
-        website = self.applescript_input_dialog("添加网站", "请输入网站名称或URL:")
+        website = self.qt_input_dialog("添加网站", "请输入网站名称或URL:")
         if website and website.strip():
             website = website.strip()
             if website not in self.websites:
                 self.websites.append(website)
                 self.current_website = website
+                # 立即更新网站名称显示
+                self.update_title()
                 print(f"已添加新网站: {website}")
                 self.save_config()
                 self.setup_menu()
-                self.show_notification("NewsFilter", "网站已添加", f"当前网站: {website}")
+                self.show_notification("NewsFilter", "网站已添加", f"当前网站: {self.current_website_name}")
             else:
                 print(f"网站已存在: {website}")
-                self.show_notification("NewsFilter", "提示", "此网站已在列表中")
                 self.current_website = website
+                # 立即更新网站名称显示
+                self.update_title()
                 self.setup_menu()
+                self.show_notification("NewsFilter", "提示", f"此网站已在列表中，已选择: {self.current_website_name}")
         else:
             print("用户取消或输入为空")
 
     def add_command(self, _):
-        """添加新指令"""
+        """添加新指令 - 使用组合输入对话框"""
         print("\n添加新指令")
-        command = self.applescript_input_dialog("添加指令", "请输入指令:")
-        if command and command.strip():
-            command = command.strip()
-            if command not in self.commands:
-                self.commands.append(command)
-                self.current_command = command
-                print(f"已添加新指令: {command}")
+        try:
+            # 使用组合输入对话框
+            dialog = CommandInputDialog("添加指令")
+            command_name, command = dialog.get_inputs()
+
+            if not command_name or not command:
+                print("用户取消或输入为空")
+                return
+
+            if command_name not in self.commands:
+                self.commands[command_name] = command  # 存储到字典中
+                self.current_command_name = command_name
+                print(f"已添加新指令: {command_name}")
                 self.save_config()
                 self.setup_menu()
-                self.show_notification("NewsFilter", "指令已添加", f"当前指令: {command}")
+                self.show_notification("NewsFilter", "指令已添加", f"当前指令: {command_name}")
             else:
-                print(f"指令已存在: {command}")
-                self.show_notification("NewsFilter", "提示", "此指令已在列表中")
-                self.current_command = command
+                print(f"指令名称已存在: {command_name}")
+                self.show_notification("NewsFilter", "提示", "此指令名称已在列表中")
+                self.current_command_name = command_name
                 self.setup_menu()
-        else:
-            print("用户取消或输入为空")
+        except Exception as e:
+            print(f"添加指令失败: {e}")
+            self.show_notification("NewsFilter", "错误", f"添加指令失败: {str(e)}")
 
     def select_website(self, sender):
         """选择网站回调"""
@@ -314,15 +320,15 @@ class NewsFilterMenuBar(rumps.App):
         self.current_website = website
         self.update_title()
         self.setup_menu()  # 重建菜单以更新状态
-        self.show_notification("NewsFilter", "网站已选择", f"当前网站: {self.current_website}")
+        self.show_notification("NewsFilter", "网站已选择", f"当前网站: {self.current_website_name}")
 
     def select_command(self, sender):
         """选择指令回调"""
-        command = sender.title
-        print(f"\n选择指令: {command}")
-        self.current_command = command
+        command_name = sender.title
+        print(f"\n选择指令: {command_name}")
+        self.current_command_name = command_name
         self.setup_menu()  # 重建菜单以更新状态
-        self.show_notification("NewsFilter", "指令已选择", f"当前指令: {self.current_command}")
+        self.show_notification("NewsFilter", "指令已选择", f"当前指令: {self.current_command_name}")
 
     def edit_config_file(self, _):
         """在文本编辑器中编辑配置文件"""
@@ -335,14 +341,14 @@ class NewsFilterMenuBar(rumps.App):
     def clear_config(self, _):
         """清除所有配置"""
         print("\n清除所有配置")
-        confirm = self.applescript_confirm_dialog("确认", "确定要清除所有配置吗?")
+        confirm = self.qt_confirm_dialog("确认", "确定要清除所有配置吗?")
         if confirm:
             print("用户确认清除配置")
             self.websites = []
-            self.commands = []
+            self.commands = {}  # 清空字典
             self.saved_configs = []
             self.current_website = ""
-            self.current_command = ""
+            self.current_command_name = ""
             print("已清空所有配置数据")
             self.save_config()
             self.setup_menu()
@@ -363,19 +369,39 @@ class NewsFilterMenuBar(rumps.App):
             self.show_notification("NewsFilter", "错误", "请先选择或添加一个网站")
             return
 
-        if not self.current_command:
+        if not self.current_command_name:
             print("错误: 未选择指令")
             self.show_notification("NewsFilter", "错误", "请先选择或添加一个指令")
             return
 
-        print(f"开始执行任务: 网站={self.current_website}, 指令={self.current_command}")
-        self.show_notification("NewsFilter", "任务开始", f"网站: {self.current_website}\n指令: {self.current_command}")
+        # 获取指令内容
+        command_content = self.commands.get(self.current_command_name)
+        if not command_content:
+            print(f"错误: 找不到指令内容: {self.current_command_name}")
+            self.show_notification("NewsFilter", "错误", "指令内容不存在")
+            return
+
+        # 检查API Key
+        if not self.api_key:
+            print("错误: 未配置API Key")
+            self.show_notification("NewsFilter", "错误", "请先配置API Key")
+            self.configure_api_key(None)
+            if not self.api_key:  # 如果用户取消了配置
+                return
+
+        # 确保Agent实例存在
+        if not self.agent:
+            self.agent = Agent(api_key=self.api_key)
+
+        print(f"开始执行任务: 网站={self.current_website}, 指令={self.current_command_name}")
+        self.show_notification("NewsFilter", "任务开始",
+                               f"网站: {self.current_website_name}\n指令: {self.current_command_name}")
         self.task_running = True
 
         # 启动一个线程来运行异步任务
-        threading.Thread(target=self._run_async_task, daemon=True).start()
+        threading.Thread(target=self._run_async_task, args=(command_content,), daemon=True).start()
 
-    def _run_async_task(self):
+    def _run_async_task(self, command_content):
         """在单独的线程中运行异步任务"""
         try:
             # 设置网站
@@ -386,63 +412,89 @@ class NewsFilterMenuBar(rumps.App):
             asyncio.set_event_loop(loop)
 
             # 运行异步任务
-            loop.run_until_complete(self._execute_task())
+            loop.run_until_complete(self._execute_task(command_content))
             loop.close()
         except Exception as e:
             print(f"任务执行出错: {e}")
+
             # 在主线程上安排通知
-            rumps.Timer(0, lambda _: self.show_notification("NewsFilter", "任务失败", str(e))).start()
+            def show_error_notification(_):
+                self.show_notification("NewsFilter", "任务失败", str(e))
+
+            timer = rumps.Timer(show_error_notification, 0.1)
+            timer.start()
         finally:
             # 标记任务完成
             self.task_running = False
 
-    async def _execute_task(self):
+    async def _execute_task(self, command_content):
         """实际的异步任务执行"""
         try:
-            # 注意: 这里修复了字符串引用的问题，使用实际值而不是字符串字面量
-            await self.agent.work(self.current_command,self.alert)
+            # 使用指令内容执行任务
+            await self.agent.work(command_content)
 
             # 任务完成后在主线程上安排通知
-            rumps.Timer(0, lambda _: self.show_notification(
-                "NewsFilter",
-                "任务完成",
-                f"网站: {self.current_website}\n指令: {self.current_command}"
-            )).start()
+            def show_completion_notification(_):
+                self.show_notification(
+                    "NewsFilter",
+                    "任务完成",
+                    f"网站: {self.current_website_name}\n指令: {self.current_command_name}"
+                )
+
+            timer = rumps.Timer(show_completion_notification, 0.1)
+            timer.start()
         except Exception as e:
             print(f"执行任务时出错: {e}")
             raise  # 重新抛出异常，让_run_async_task捕获
 
-    def alert(self, message):
-        """ 显示警报通知 """
-        print(f"\n[警报] {message}")
-
-        try:
-            # 使用 rumps 进行通知
-            rumps.notification("NewsFilter 警报", "重要通知", message)
-        except Exception as e:
-            print(f"rumps.notification 失败: {e}")
-
-        try:
-            # 使用 AppleScript 提供系统级通知
-            script = f'display notification "{message}" with title "NewsFilter 警报"'
-            subprocess.run(['osascript', '-e', script], capture_output=True)
-        except Exception as e:
-            print(f"AppleScript通知失败: {e}")
-
     def open_logs(self, _):
-        """打开日志"""
+        """打开日志文件夹"""
         print("\n查看日志")
-        self.show_notification("NewsFilter", "日志", "日志功能尚未实现")
+
+        # 定义日志文件夹路径
+        log_dir = "./logs"
+
+        # 确保日志文件夹存在
+        try:
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+                print(f"创建日志文件夹: {os.path.abspath(log_dir)}")
+
+            # 在 macOS 上使用 open 命令打开文件夹
+            abs_path = os.path.abspath(log_dir)
+            subprocess.call(["open", abs_path])
+            print(f"已打开日志文件夹: {abs_path}")
+
+            self.show_notification("NewsFilter", "日志", f"已打开日志文件夹")
+        except Exception as e:
+            error_msg = f"打开日志文件夹失败: {str(e)}"
+            print(error_msg)
+            self.show_notification("NewsFilter", "错误", error_msg)
+
+    def configure_api_key(self, _):
+        """配置API Key"""
+        print("\n配置API Key")
+        api_key = self.qt_input_dialog("配置API Key", "请输入您的API Key:", self.api_key)
+        if api_key and api_key.strip():
+            self.api_key = api_key.strip()
+            print("API Key已更新")
+            self.save_config()
+            self.show_notification("NewsFilter", "API Key已更新", "API Key配置已保存")
+            # 重新初始化Agent
+            self.agent = Agent(api_key=self.api_key)
+        else:
+            print("API Key配置已取消")
 
     def save_config(self):
         """保存配置到文件"""
         print(f"\n保存配置到: {CONFIG_FILE}")
         config = {
             "websites": self.websites,
-            "commands": self.commands,
+            "commands": self.commands,  # 保存为字典 {名称: 内容}
             "saved_configs": self.saved_configs,
             "last_website": self.current_website,
-            "last_command": self.current_command
+            "last_command": self.current_command_name,
+            "api_key": self.api_key  # 保存API Key
         }
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -460,16 +512,106 @@ class NewsFilterMenuBar(rumps.App):
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
                     self.websites = config.get("websites", [])
-                    self.commands = config.get("commands", [])
+
+                    # 处理commands，兼容旧格式(列表)和新格式(字典)
+                    commands_data = config.get("commands", {})
+                    if isinstance(commands_data, list):
+                        # 旧格式：将列表转换为字典
+                        print("检测到旧格式的指令配置，正在转换...")
+                        self.commands = {}
+                        for i, cmd in enumerate(commands_data):
+                            # 如果是元组(已经是新格式的一部分过渡)
+                            if isinstance(cmd, list) and len(cmd) == 2:
+                                self.commands[cmd[0]] = cmd[1]
+                            else:
+                                # 完全旧格式，使用序号作为名称
+                                cmd_name = f"指令 {i + 1}"
+                                self.commands[cmd_name] = cmd
+                        print(f"转换完成，共 {len(self.commands)} 个指令")
+                    else:
+                        # 新格式：直接使用字典
+                        self.commands = commands_data
+
                     self.saved_configs = config.get("saved_configs", [])
                     self.current_website = config.get("last_website", "")
-                    self.current_command = config.get("last_command", "")
+
+                    # 处理当前指令名称，兼容旧版本
+                    last_command = config.get("last_command", "")
+                    # 如果last_command是字符串，可能是旧格式的指令内容或新格式的指令名称
+                    if last_command:
+                        if last_command in self.commands:
+                            # 新格式：名称存在于字典中
+                            self.current_command_name = last_command
+                        else:
+                            # 旧格式：需要找出对应的名称
+                            for name, content in self.commands.items():
+                                if content == last_command:
+                                    self.current_command_name = name
+                                    break
+                            else:
+                                self.current_command_name = ""
+
+                    self.api_key = config.get("api_key", "")
                 print("配置加载成功")
                 print(f"已加载 {len(self.websites)} 个网站")
                 print(f"已加载 {len(self.commands)} 个指令")
                 print(f"已加载 {len(self.saved_configs)} 个保存的配置")
+                if self.api_key:
+                    print("已加载API Key配置")
             except Exception as e:
                 print(f"加载配置失败: {e}")
+
+    def delete_website(self, sender):
+        """删除单个网站"""
+        website = sender.title
+        print(f"\n删除网站: {website}")
+
+        # 从网站列表中移除
+        if website in self.websites:
+            self.websites.remove(website)
+            print(f"已删除网站: {website}")
+
+            # 如果删除的是当前选择的网站，则清除当前选择
+            if self.current_website == website:
+                self.current_website = ""
+                self.current_website_name = ""
+
+            # 移除相关的已保存配置
+            self.saved_configs = [(site, cmd) for site, cmd in self.saved_configs
+                                  if site != website]
+
+            # 保存配置并更新菜单
+            self.save_config()
+            self.setup_menu()
+            self.update_title()
+            self.show_notification("NewsFilter", "删除成功", f"已删除网站: {website}")
+        else:
+            print(f"错误: 网站不存在: {website}")
+
+    def delete_command(self, sender):
+        """删除单个指令"""
+        cmd_name = sender.title
+        print(f"\n删除指令: {cmd_name}")
+
+        # 从指令字典中移除
+        if cmd_name in self.commands:
+            del self.commands[cmd_name]
+            print(f"已删除指令: {cmd_name}")
+
+            # 如果删除的是当前选择的指令，则清除当前选择
+            if self.current_command_name == cmd_name:
+                self.current_command_name = ""
+
+            # 移除相关的已保存配置
+            self.saved_configs = [(site, cmd) for site, cmd in self.saved_configs
+                                  if cmd != cmd_name]
+
+            # 保存配置并更新菜单
+            self.save_config()
+            self.setup_menu()
+            self.show_notification("NewsFilter", "删除成功", f"已删除指令: {cmd_name}")
+        else:
+            print(f"错误: 指令不存在: {cmd_name}")
 
 
 if __name__ == "__main__":
