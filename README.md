@@ -17,7 +17,7 @@ NewsFilter 是一个 macOS 菜单栏应用，帮助用户自动浏览网站并�
 
 ## 应用演示
 
-![image](https://github.com/ZhengYaWei1992/ZWProgressView/blob/master/Untitled3.gif)
+![image](https://github.com/WhereAreMySOCKS/NewsFilter-client/blob/main/demo/demo.gif)
 
 ## 使用方法
 
