@@ -5,9 +5,9 @@ import subprocess
 import platform
 import os
 from pyexpat.errors import messages
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, TimeoutError
 import asyncio
 from action import Action, Coordinate
 from utils.error import BrowserOperationError
@@ -35,8 +35,12 @@ class BrowserController:
         self.chrome_process = None
         self.logger = logging.getLogger(self.__class__.__name__)
         self.website_url = website_url
+        self._pages = []  # 存储所有打开的页面
+        self._page_listeners = []  # 存储页面事件监听器
 
     def set_website_url(self, website_url: str):
+        if website_url and 'http' not in website_url:
+            website_url = 'https://' + website_url
         self.website_url = website_url
         assert self.website_url, "News website cannot be None!"
 
@@ -73,10 +77,17 @@ class BrowserController:
                 # Get existing context or create a new one
                 if len(self._browser.contexts) > 0:
                     self._context = self._browser.contexts[0]
-                    self._page = await self._context.new_page()
+                    # 获取所有已存在的页面
+                    self._pages = self._context.pages
+                    if len(self._pages) > 0:
+                        self._page = self._pages[0]  # 使用第一个页面作为当前页面
+                    else:
+                        self._page = await self._context.new_page()
+                        self._pages.append(self._page)
                 else:
                     self._context = await self._browser.new_context()
                     self._page = await self._context.new_page()
+                    self._pages = [self._page]
 
             else:
                 # Use Playwright's bundled browser
@@ -88,6 +99,7 @@ class BrowserController:
                 )
                 self._context = await self._browser.new_context()
                 self._page = await self._context.new_page()
+                self._pages = [self._page]
 
             # Common setup
             await self._page.set_viewport_size({"width": 1280, "height": 720})
@@ -95,15 +107,151 @@ class BrowserController:
             # Set default navigation timeout to avoid getting stuck
             self._page.set_default_navigation_timeout(30000)
 
+            # 设置页面事件监听
+            await self._setup_page_listeners()
+
             # Navigate to the website
-            await self.navigate(self.website_url)
-            self.logger.info(f"Navigated to {self.website_url}")
+            if self.website_url:
+                await self.navigate(self.website_url)
+                self.logger.info(f"Navigated to {self.website_url}")
 
         except Exception as e:
             self.logger.error(f"Failed to initialize browser: {e}")
             await self.cleanup()
             raise BrowserOperationError(f"Browser initialization failed: {str(e)}")
 
+    async def _setup_page_listeners(self):
+        """设置页面事件监听器"""
+        if not self._context:
+            return
+
+        # 监听新页面打开事件
+        self._context.on("page", self._on_new_page)
+        
+        # 为当前页面添加加载事件监听
+        for page in self._pages:
+            self._add_page_listeners(page)
+
+    def _add_page_listeners(self, page):
+        """为页面添加事件监听器"""
+        # 监听页面导航事件
+        page.on("load", lambda: asyncio.create_task(self._on_page_load(page)))
+        
+        # 可以添加更多事件监听器，如对话框、控制台消息等
+        page.on("dialog", lambda dialog: asyncio.create_task(self._on_dialog(dialog)))
+
+    async def _on_page_load(self, page):
+        """页面加载完成时的回调"""
+        try:
+            # 如果加载的页面不在我们的列表中，添加它
+            if page not in self._pages:
+                self._pages.append(page)
+                self._add_page_listeners(page)
+
+            # 更新视口大小
+            if page.is_closed():
+                return
+
+            await page.set_viewport_size({"width": 1280, "height": 720})
+            self.logger.info(f"Page loaded: {await page.title() if not page.is_closed() else 'unknown'}")
+        except Exception as e:
+            self.logger.error(f"Error in page load handler: {e}")
+
+    async def _on_dialog(self, dialog):
+        """处理对话框的回调"""
+        try:
+            # 默认处理方式：接受对话框
+            self.logger.info(f"Dialog appeared: {dialog.message}")
+            await dialog.accept()
+        except Exception as e:
+            self.logger.error(f"Error handling dialog: {e}")
+
+    async def _on_new_page(self, page):
+        """新页面打开时的回调"""
+        try:
+            self.logger.info("New page opened")
+            
+            # 添加到页面列表
+            if page not in self._pages:
+                self._pages.append(page)
+                
+            # 为新页面添加事件监听器
+            self._add_page_listeners(page)
+            
+            # 切换到新页面
+            self._page = page
+            
+            # 等待页面加载完成
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                self.logger.info("New page DOM loaded")
+            except TimeoutError:
+                self.logger.warning("Timeout waiting for new page to load")
+                
+            # 设置视口大小
+            if not page.is_closed():
+                await page.set_viewport_size({"width": 1280, "height": 720})
+                title = await page.title() if not page.is_closed() else "unknown"
+                self.logger.info(f"Switched to new page: {title}")
+        except Exception as e:
+            self.logger.error(f"Error handling new page: {e}")
+
+    async def get_all_pages(self) -> List[Page]:
+        """获取所有打开的页面"""
+        if self._context:
+            # 刷新页面列表，删除已关闭的页面
+            self._pages = [page for page in self._context.pages if not page.is_closed()]
+        return self._pages
+
+    async def switch_to_page(self, page_index: int) -> None:
+        """切换到指定索引的页面"""
+        pages = await self.get_all_pages()
+        if 0 <= page_index < len(pages):
+            self._page = pages[page_index]
+            title = await self._page.title() if not self._page.is_closed() else "unknown"
+            self.logger.info(f"Switched to page {page_index}: {title}")
+        else:
+            raise BrowserOperationError(f"Invalid page index: {page_index}. Total pages: {len(pages)}")
+
+    async def switch_to_new_page(self) -> None:
+        """切换到最新打开的页面"""
+        pages = await self.get_all_pages()
+        if len(pages) > 0:
+            self._page = pages[-1]  # 最后一个页面通常是最新打开的
+            title = await self._page.title() if not self._page.is_closed() else "unknown"
+            self.logger.info(f"Switched to latest page: {title}")
+        else:
+            raise BrowserOperationError("No pages available")
+
+    async def close_current_page(self) -> None:
+        """关闭当前页面并切换到前一个页面"""
+        if not self._page or self._page.is_closed():
+            return
+            
+        pages = await self.get_all_pages()
+        current_index = pages.index(self._page) if self._page in pages else -1
+        
+        if current_index == -1:
+            return
+        
+        # 关闭当前页面
+        await self._page.close()
+        
+        # 更新页面列表
+        pages = await self.get_all_pages()
+        
+        # 如果还有页面，切换到前一个页面
+        if pages:
+            new_index = min(current_index, len(pages) - 1)
+            self._page = pages[new_index]
+            title = await self._page.title() if not self._page.is_closed() else "unknown"
+            self.logger.info(f"Switched to page {new_index} after closing previous page: {title}")
+        else:
+            # 如果没有页面了，创建一个新页面
+            self._page = await self._context.new_page()
+            self._pages = [self._page]
+            self.logger.info("Created new page after closing last page")
+            
     async def _wait(self, t=None):
         """Wait for a specified time"""
         if t is None:
@@ -112,12 +260,26 @@ class BrowserController:
 
     async def navigate(self, url: str) -> None:
         """Navigate to a URL"""
+        if not url:
+            self.logger.warning("Empty URL provided to navigate")
+            return
+            
         try:
-            response = await self._page.goto(url, wait_until="networkidle")
+            self.logger.info(f"Navigating to: {url}")
+            response = await self._page.goto(url, wait_until="domcontentloaded")
+            
+            # 尝试等待网络请求完成，但不让它阻塞太久
+            try:
+                await self._page.wait_for_load_state("networkidle", timeout=10000)
+            except TimeoutError:
+                self.logger.warning("Timeout waiting for network idle, continuing anyway")
+                
             if not response:
                 self.logger.warning(f"Navigation to {url} did not return a response.")
             elif response.status >= 400:
                 self.logger.warning(f"Navigation to {url} returned status {response.status}")
+            else:
+                self.logger.info(f"Successfully navigated to {url}")
         except Exception as e:
             self.logger.error(f"Failed to navigate to {url}: {e}")
             raise BrowserOperationError(f"Navigation failed: {str(e)}")
@@ -154,6 +316,7 @@ class BrowserController:
             'hotkey': self._handle_hotkey,
             'type': self._handle_type,
             'scroll': self._handle_scroll,
+            'switch_tab': self._handle_switch_tab,
         }
         try:
             handler = handlers[action.action_type]
@@ -165,8 +328,26 @@ class BrowserController:
         """处理点击操作"""
         center = Action.calculate_center(action.start_box)
         await self._show_mouse_move(*center)
+        
+        # 保存点击前的页面数量
+        before_pages = len(await self.get_all_pages())
+        
+        # 执行点击
         await self._page.mouse.click(*center)
-        await self._wait()
+        await self._wait(0.5)
+        
+        # 检查是否有新页面打开
+        after_pages = len(await self.get_all_pages())
+        if after_pages > before_pages:
+            self.logger.info("New page detected after click, waiting for it to load")
+            # 等待新页面加载
+            await self._wait(1.0)
+        
+        # 等待页面加载状态
+        try:
+            await self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except TimeoutError:
+            self.logger.warning("Timeout waiting for page to load after click, continuing anyway")
 
     async def _handle_double_click(self, action: Action) -> None:
         """处理双击操作"""
@@ -174,6 +355,12 @@ class BrowserController:
         await self._show_mouse_move(*center)
         await self._page.mouse.click(*center, click_count=2)
         await self._wait()
+        
+        # 等待页面加载状态
+        try:
+            await self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except TimeoutError:
+            pass
 
     async def _handle_right_click(self, action: Action) -> None:
         """处理右键操作"""
@@ -196,6 +383,12 @@ class BrowserController:
         """处理快捷键操作"""
         await self._page.keyboard.press(action.key)
         await self._wait()
+        
+        # 部分快捷键可能触发导航，等待页面加载
+        try:
+            await self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except TimeoutError:
+            pass
 
     async def _handle_type(self, action: Action) -> None:
         """处理输入操作"""
@@ -203,6 +396,11 @@ class BrowserController:
         await self._page.keyboard.type(content)
         if submit:
             await self._page.keyboard.press('Enter')
+            # 提交表单可能触发导航，等待页面加载
+            try:
+                await self._page.wait_for_load_state("domcontentloaded", timeout=5000)
+            except TimeoutError:
+                pass
         await self._wait()
 
     async def _handle_scroll(self, action: Action) -> None:
@@ -211,6 +409,16 @@ class BrowserController:
         await self._page.mouse.move(*center)
         await self._page.mouse.wheel(*action.deltas)
         await self._wait()
+        
+    async def _handle_switch_tab(self, action: Action) -> None:
+        """处理标签页切换"""
+        if hasattr(action, 'tab_index') and action.tab_index is not None:
+            tab_index = action.tab_index
+            await self.switch_to_page(tab_index)
+        else:
+            # 默认切换到最新标签页
+            await self.switch_to_new_page()
+        await self._wait(0.5)
 
     async def _show_mouse_move(self, x: int, y: int) -> None:
         """
@@ -327,6 +535,23 @@ class BrowserController:
             self.logger.error(f"Failed to press key {key}: {e}")
             raise BrowserOperationError(f"Key press operation failed: {str(e)}")
 
+    async def get_current_page_info(self) -> Dict[str, Any]:
+        """获取当前页面的信息"""
+        if not self._page or self._page.is_closed():
+            return {"error": "No active page"}
+            
+        try:
+            pages = await self.get_all_pages()
+            return {
+                "url": self._page.url,
+                "title": await self._page.title(),
+                "page_index": pages.index(self._page) if self._page in pages else -1,
+                "total_pages": len(pages)
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get page info: {e}")
+            return {"error": str(e)}
+
     async def _capture_screenshot(self, is_full_page=False) -> bytes:
         """页面截图捕获"""
         try:
@@ -381,7 +606,18 @@ class BrowserController:
         js = await self._capture_js()
         text = await self._capture_text()
         img_base64 = base64.b64encode(screenshot).decode("utf-8")
-        return {'html': html, 'js': js, 'text': text, 'img_base64': img_base64, 'screenshot': screenshot}
+        
+        # 获取页面元信息
+        page_info = await self.get_current_page_info()
+        
+        return {
+            'html': html, 
+            'js': js, 
+            'text': text, 
+            'img_base64': img_base64, 
+            'screenshot': screenshot,
+            'page_info': page_info
+        }
 
     async def execute_javascript(self, script: str):
         """Execute JavaScript in the browser context"""
@@ -395,20 +631,36 @@ class BrowserController:
     async def cleanup(self) -> None:
         """Clean up resources"""
         try:
+            # 清理页面列表
+            self._pages = []
+            
             if self._page:
-                await self._page.close()
+                try:
+                    if not self._page.is_closed():
+                        await self._page.close()
+                except:
+                    pass
                 self._page = None
 
             if self._context:
-                await self._context.close()
+                try:
+                    await self._context.close()
+                except:
+                    pass
                 self._context = None
 
             if self._browser:
-                await self._browser.close()
+                try:
+                    await self._browser.close()
+                except:
+                    pass
                 self._browser = None
 
             if self._playwright:
-                await self._playwright.stop()
+                try:
+                    await self._playwright.stop()
+                except:
+                    pass
                 self._playwright = None
 
             # Only terminate the process if we started it
@@ -436,9 +688,52 @@ if __name__ == "__main__":
 
         while True:
             action_type = input(
-                "请输入操作类型（click, left_double, right_single, drag, hotkey, type, scroll, screenshot, exit）：")
+                "请输入操作类型（click, left_double, right_single, drag, hotkey, type, scroll, screenshot, tabs, exit）：")
+            
             if action_type == 'exit':
                 break
+                
+            if action_type == 'tabs':
+                # 显示和管理标签页
+                pages = await agent.get_all_pages()
+                print(f"当前共有 {len(pages)} 个标签页:")
+                for i, page in enumerate(pages):
+                    title = await page.title() if not page.is_closed() else "unknown"
+                    url = page.url
+                    current = "* " if page == agent._page else "  "
+                    print(f"{current}[{i}] {title} - {url}")
+                
+                tab_cmd = input("请输入标签页操作 (switch <index>/new/close/refresh): ")
+                if tab_cmd.startswith("switch "):
+                    try:
+                        idx = int(tab_cmd.split(" ")[1])
+                        await agent.switch_to_page(idx)
+                        print(f"已切换到标签页 {idx}")
+                    except Exception as e:
+                        print(f"切换标签页失败: {e}")
+                elif tab_cmd == "new":
+                    try:
+                        new_page = await agent._context.new_page()
+                        agent._pages.append(new_page)
+                        agent._page = new_page
+                        await new_page.goto("https://www.baidu.com")
+                        print("已创建新标签页")
+                    except Exception as e:
+                        print(f"创建新标签页失败: {e}")
+                elif tab_cmd == "close":
+                    try:
+                        await agent.close_current_page()
+                        print("已关闭当前标签页")
+                    except Exception as e:
+                        print(f"关闭标签页失败: {e}")
+                elif tab_cmd == "refresh":
+                    try:
+                        await agent._page.reload()
+                        print("已刷新当前页面")
+                    except Exception as e:
+                        print(f"刷新页面失败: {e}")
+                continue
+                
             if action_type == 'screenshot':
                 screenshot_path = f"screenshot_{screenshot_count}.png"  # 自动生成截图文件名
                 try:
@@ -477,6 +772,16 @@ if __name__ == "__main__":
                 if submit:
                     content += '\n'
                 action = Action(action_type, params={'content': content})
+            elif action_type == 'switch_tab':
+                tab_idx_str = input("请输入要切换的标签页索引 (默认切换到最新标签页): ")
+                if tab_idx_str:
+                    try:
+                        tab_idx = int(tab_idx_str)
+                        action = Action(action_type, params={'tab_index': tab_idx})
+                    except ValueError:
+                        action = Action(action_type)
+                else:
+                    action = Action(action_type)
             else:
                 print("无效的操作类型！")
                 continue

@@ -73,33 +73,67 @@ class Agent:
 
         await self.hands.initialize()
         try:  # 使用 try...finally 确保即使发生异常也关闭浏览器
-            while action.action_type not in ['finished', 'call_user'] and self._is_stop_work:
+            while action.action_type not in ['finished', 'call_user'] and not self._is_stop_work:
                 step += 1
                 self.logger.info(f"--- 开始步骤{step} ---")
-                info = await self.hands.save_page_info()
-                screenshot = info.get('screenshot', None)
-                # visible_elements = await self.hands.capture_visible_elements()
-                if screenshot:
-                    self.screenshot_cache.append(screenshot)  # 缓存截图
+                
+                # 捕获当前页面信息
+                try:
+                    info = await self.hands.save_page_info()
+                    screenshot = info.get('screenshot', None)
+                    if screenshot:
+                        self.screenshot_cache.append(screenshot)  # 缓存截图
+                except Exception as e:
+                    self.logger.error(f"捕获页面信息失败: {e}")
+                    if step > 1:  # 如果不是第一步，尝试继续
+                        continue
+                    else:  # 如果是第一步就失败，则中断任务
+                        raise
+                
                 self.logger.info(f"历史动作：{history}")
                 self.logger.info(f"VisionLLM 思考中......")
+                
+                # AI思考并决定动作
                 thought, action = self.brain.think(page_info=info,
                                                    user_instruction=user_instruction, history=history)
                 self.logger.info(f"VisionLLM 思考结果 - Thought: '{thought}', Action: '{action}'")
                 history.append(f'thought:{thought},action:{action}')
-                await self.hands.execute(action)
+                
+                # 执行动作
+                try:
+                    await self.hands.execute(action)
+                    self.logger.info(f"动作执行成功: {action}")
+                except Exception as e:
+                    self.logger.error(f"动作执行失败: {e}")
+                    if action.action_type == 'switch_tab':
+                        self.logger.info("尝试刷新页面列表并重试...")
+                        await self.hands.get_all_pages()  # 刷新页面列表
+                        try:
+                            await self.hands.execute(action)
+                            self.logger.info(f"重试后动作执行成功: {action}")
+                        except Exception as retry_error:
+                            self.logger.error(f"重试仍然失败: {retry_error}")
+                
+                # 每个步骤后稍微等待
+                await asyncio.sleep(0.5)
+                
                 self.logger.info(f"--- 步骤结束 ---\n\n\n")
 
             if action.action_type == 'finished':
                 self.logger.info(f"任务完成！")
             elif action.action_type == 'call_user':
-                self.logger.warning(f"请求用户协助：{action.parameters.get('message', '')}")
+                self.logger.warning(f"请求用户协助：{action.question if hasattr(action, 'question') else '未提供问题'}")
 
         finally:
+            # 清理资源
             await self.hands.shutdown()
             self.logger.info(f"浏览器已关闭。")
             self._save_cached_screenshots()  # 任务结束后保存所有缓存的截图
             self.logger.info(f"截图已保存，任务结束。")
+            
+            # 移除文件处理器以避免资源泄漏
+            self.logger.removeHandler(file_handler)
+            file_handler.close()
 
     def _save_cached_screenshots(self):
         """
