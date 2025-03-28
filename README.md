@@ -1,12 +1,12 @@
 # Browsetic 🚀
 
-Browsetic is a macOS menu bar application that combines the **Qwen-VL2.5-72B** model with **Playwright** to intelligently control your browser based on user commands, enabling seamless web automation.
+[English](./README.md) | [中文](./README_CN.md) 
 
+![demo](https://github.com/WhereAreMySOCKS/NewsFilter-client/blob/main/demo/demo.gif)
+Browsetic is a macOS menu bar application that combines the **Qwen-VL2.5-72B** model with **Playwright** to intelligently control your browser based on user commands, enabling seamless web automation.
 - **🖥️ Local Execution**: Operates directly on your local browser (currently supports Google Chrome), utilizing existing login states without requiring additional authentication.
 - **📑 Multi-Tab Management**: Efficiently handles multiple browser tabs, ensuring smooth task transitions.
 - **⚡ High-Performance Execution**: Leverages advanced VLM processing to quickly interpret and execute complex web actions.
-
-![demo](https://github.com/WhereAreMySOCKS/NewsFilter-client/blob/main/demo/demo.gif)
 
 ## 🚀 Quick Start
 

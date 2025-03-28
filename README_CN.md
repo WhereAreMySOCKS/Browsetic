@@ -1,12 +1,13 @@
 # Browsetic 🚀
-
+[English](./README.md)| [中文](./README_CN.md) 
+![demo](https://github.com/WhereAreMySOCKS/Browsetic/blob/main/demo/demo.gif)
 Browsetic 是一款 macOS 菜单栏应用，结合 **Qwen-VL2.5-72B** 模型与 **Playwright**，可根据用户指令智能控制浏览器，实现网页自动化操作。
 
 - **🖥️ 本地运行**：依托本地浏览器（目前支持 Google Chrome），可使用已有登录状态访问网站，无需额外登录。
 - **📑 多标签管理**：支持多个浏览器标签页的智能控制，任务切换流畅。
 - **⚡ 高效执行**：结合强大的 VLM 解析能力，快速理解和执行复杂网页操作。
 
-![demo](https://github.com/WhereAreMySOCKS/Browsetic/blob/main/demo/demo.gif)
+
 
 ## 🚀 快速开始
 
